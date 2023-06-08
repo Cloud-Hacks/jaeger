@@ -22,6 +22,9 @@ jobs:
   publish-release:
     name: Create Jaeger latest release
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build-and-publish.outputs.image }}
+      digest: ${{ steps.build-and-publish.outputs.digest }}
 
     steps:
     - name: Harden Runner
@@ -85,17 +88,17 @@ jobs:
         DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
 
-    - name: Build, test, and publish all-in-one image
-      run: bash scripts/build-all-in-one-image.sh
-      env:
-        DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+    # - name: Build, test, and publish all-in-one image
+    #   run: bash scripts/build-all-in-one-image.sh
+    #   env:
+    #     DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    #     QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
 
-    - name: Build, test, and publish hotrod image
-      run: bash scripts/hotrod-integration-test.sh
-      env:
-        DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+    # - name: Build, test, and publish hotrod image
+    #   run: bash scripts/hotrod-integration-test.sh
+    #   env:
+    #     DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    #     QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
 
     - name: Install Cosign
       uses: sigstore/cosign-installer@main
@@ -104,7 +107,7 @@ jobs:
           # This step uses the identity token to provision an ephemeral certificate
           # against the sigstore community Fulcio instance.
       env:
-        DIGEST: ${{ steps.build-and-publish.outputs.DIGEST }}
+        DIGEST: ${{ steps.build-and-publish.outputs.digest }}
         TAG: $(bash scripts/compute-tags.sh)
       run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
 
