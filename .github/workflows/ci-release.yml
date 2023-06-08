@@ -58,23 +58,23 @@ jobs:
 #         gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
 #         passphrase: ${{ secrets.GPG_PASSPHRASE }}
 
-    - name: Build binaries
-      id: build-binaries
-      run: make build-all-platforms
+#     - name: Build binaries
+#       id: build-binaries
+#       run: make build-all-platforms
 
-    - name: Package binaries
-      id: package-binaries
-      run: bash scripts/package-deploy.sh
-      if: steps.build-binaries.outcome == 'success'
+#     - name: Package binaries
+#       id: package-binaries
+#       run: bash scripts/package-deploy.sh
+#       if: steps.build-binaries.outcome == 'success'
 
-    - name: Upload binaries
-      uses: svenstaro/upload-release-action@2b9d2847a97b04d02ad5c3df2d3a27baa97ce689
-      with:
-        file: '{deploy/*.tar.gz,deploy/*.zip,deploy/*.sha256sum.txt,deploy/*.asc}'
-        file_glob: true
-        tag: ${{ github.ref }}
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-      if: steps.package-binaries.outcome == 'success'
+#     - name: Upload binaries
+#       uses: svenstaro/upload-release-action@2b9d2847a97b04d02ad5c3df2d3a27baa97ce689
+#       with:
+#         file: '{deploy/*.tar.gz,deploy/*.zip,deploy/*.sha256sum.txt,deploy/*.asc}'
+#         file_glob: true
+#         tag: ${{ github.ref }}
+#         repo_token: ${{ secrets.GITHUB_TOKEN }}
+#       if: steps.package-binaries.outcome == 'success'
 
     - uses: docker/setup-qemu-action@e81a89b1732b9c48d79cd809d8d81d79c4647a18
 
@@ -105,7 +105,7 @@ jobs:
           # against the sigstore community Fulcio instance.
       env:
         DIGEST: ${{ steps.build-and-publish.outputs.digest }}
-      run: xargs -I {} cosign sign --yes {}@${DIGEST}
+      run: cosign sign --yes {}@${DIGEST}
 
     - name: SBOM Generation
       uses: anchore/sbom-action@422cb34a0f8b599678c41b21163ea6088edb2624
