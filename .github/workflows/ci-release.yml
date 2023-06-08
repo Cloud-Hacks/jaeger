@@ -109,7 +109,17 @@ jobs:
       env:
         DIGEST: ${{ steps.build-and-publish.outputs.digest }}
         TAG: $(bash scripts/compute-tags.sh)
-      run: echo "${TAGS}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+      run: echo "${TAG}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+      
+    - name: Get Image Digest
+      id: digest
+      run: | 
+        echo "imagedigest=$(docker images jaeger-build:${{ steps.vars.outputs.tag }} --digests --quiet --no-trunc)" >> $GITHUB_OUTPUT
+    - name: Sign the Container Images
+      env:
+        COSIGN_EXPERIMENTAL: "true"
+      run: |
+        cosign sign jaeger-build@${{ steps.digest.outputs.imagedigest }}
 
     - name: SBOM Generation
       uses: anchore/sbom-action@422cb34a0f8b599678c41b21163ea6088edb2624
