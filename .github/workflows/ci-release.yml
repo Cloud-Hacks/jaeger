@@ -108,8 +108,8 @@ jobs:
           # against the sigstore community Fulcio instance.
       env:
         DIGEST: ${{ steps.build-and-publish.outputs.digest }}
-        TAG: $(bash scripts/compute-tags.sh)
-      run: echo "${TAG}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+        TAG: bash scripts/compute-tags.sh
+      run: echo "${TAG}" "${DIGEST}"
       
     - name: Get Image Digest
       id: digest
