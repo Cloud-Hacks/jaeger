@@ -22,9 +22,6 @@ jobs:
   publish-release:
     name: Create Jaeger latest release
     runs-on: ubuntu-latest
-    outputs:
-      image: ${{ steps.build-and-publish.outputs.image }}
-      digest: ${{ steps.build-and-publish.outputs.digest }}
 
     steps:
     - name: Harden Runner
@@ -100,6 +97,16 @@ jobs:
     #     DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     #     QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
 
+    - name: Get Image Tag
+      id: tags
+      run: | 
+        echo "tag=$(bash scripts/compute-tags.sh)"
+    
+    - name: Get Image Digest
+      id: digest
+      run: | 
+        echo "imagedigest=$(docker images jaeger-build:${{ steps.tags.outputs.tag }} --digests --quiet --no-trunc)" >> $GITHUB_OUTPUT
+
     - name: Install Cosign
       uses: sigstore/cosign-installer@main
 
@@ -108,13 +115,10 @@ jobs:
           # against the sigstore community Fulcio instance.
       env:
         DIGEST: ${{ steps.build-and-publish.outputs.digest }}
-        TAG: bash scripts/compute-tags.sh
-      run: echo "${TAG}" "${DIGEST}"
-      
-    - name: Get Image Digest
-      id: digest
-      run: | 
-        echo "imagedigest=$(docker images jaeger-build:${{ steps.vars.outputs.tag }} --digests --quiet --no-trunc)" >> $GITHUB_OUTPUT
+        TAG: ${{ steps.tags.outputs.tag }}
+      run: echo "${TAG}, ${DIGEST}"
+      # echo "${TAG}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
     - name: Sign the Container Images
       env:
         COSIGN_EXPERIMENTAL: "true"
