@@ -16,9 +16,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 
+	"github.com/go-logr/zapr"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/jaeger"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
@@ -28,16 +30,24 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.20.0"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/jaegertracing/jaeger/internal/jaegerclientenv2otel"
 	"github.com/jaegertracing/jaeger/internal/tracegen"
 )
 
-var logger, _ = zap.NewDevelopment()
-
 func main() {
+	zc := zap.NewDevelopmentConfig()
+	zc.Level = zap.NewAtomicLevelAt(zapcore.Level(-8)) // level used by OTEL's Debug()
+	logger, err := zc.Build()
+	if err != nil {
+		panic(err)
+	}
+	otel.SetLogger(zapr.NewLogger(logger))
+
 	fs := flag.CommandLine
 	cfg := new(tracegen.Config)
 	cfg.Flags(fs)
@@ -46,22 +56,47 @@ func main() {
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	jaegerclientenv2otel.MapJaegerToOtelEnvVars(logger)
 
-	exp, err := createOtelExporter(cfg.TraceExporter)
-	if err != nil {
-		logger.Sugar().Fatalf("cannot create trace exporter %s: %w", cfg.TraceExporter, err)
+	tracers, shutdown := createTracers(cfg, logger)
+	defer shutdown(context.Background())
+
+	tracegen.Run(cfg, tracers, logger)
+}
+
+func createTracers(cfg *tracegen.Config, logger *zap.Logger) ([]trace.Tracer, func(context.Context) error) {
+	if cfg.Services < 1 {
+		cfg.Services = 1
 	}
-	logger.Sugar().Infof("using %s trace exporter", cfg.TraceExporter)
+	var shutdown []func(context.Context) error
+	var tracers []trace.Tracer
+	for s := 0; s < cfg.Services; s++ {
+		svc := cfg.Service
+		if cfg.Services > 1 {
+			svc = fmt.Sprintf("%s-%02d", svc, s)
+		}
 
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exp),
-		sdktrace.WithResource(resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceNameKey.String(cfg.Service),
-		)),
-	)
-	defer tp.Shutdown(context.Background())
+		exp, err := createOtelExporter(cfg.TraceExporter)
+		if err != nil {
+			logger.Sugar().Fatalf("cannot create trace exporter %s: %w", cfg.TraceExporter, err)
+		}
+		logger.Sugar().Infof("using %s trace exporter for service %s", cfg.TraceExporter, svc)
 
-	tracegen.Run(cfg, tp.Tracer("tracegen"), logger)
+		tp := sdktrace.NewTracerProvider(
+			sdktrace.WithBatcher(exp, sdktrace.WithBlocking()),
+			sdktrace.WithResource(resource.NewWithAttributes(
+				semconv.SchemaURL,
+				semconv.ServiceNameKey.String(svc),
+			)),
+		)
+		tracers = append(tracers, tp.Tracer(cfg.Service))
+		shutdown = append(shutdown, tp.Shutdown)
+	}
+	return tracers, func(ctx context.Context) error {
+		var errs []error
+		for _, f := range shutdown {
+			errs = append(errs, f(ctx))
+		}
+		return errors.Join(errs...)
+	}
 }
 
 func createOtelExporter(exporterType string) (sdktrace.SpanExporter, error) {

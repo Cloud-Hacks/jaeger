@@ -1,3 +1,5 @@
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg)](https://stand-with-ukraine.pp.ua)
+
 <img align="right" width="290" height="290" src="https://www.jaegertracing.io/img/jaeger-vector.svg">
 
 [![Slack chat][slack-img]](#get-in-touch)
@@ -180,6 +182,7 @@ Below are the official maintainers of the Jaeger project.
 Please use `@jaegertracing/jaeger-maintainers` to tag them on issues / PRs.
 
 * [@albertteoh](https://github.com/albertteoh)
+* [@jkowall](https://github.com/jkowall)
 * [@joe-elliott](https://github.com/joe-elliott)
 * [@pavolloffay](https://github.com/pavolloffay)
 * [@yurishkuro](https://github.com/yurishkuro)

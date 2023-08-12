@@ -26,11 +26,12 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/opentracing/opentracing-go"
-	ottag "github.com/opentracing/opentracing-go/ext"
-	otlog "github.com/opentracing/opentracing-go/log"
 	"github.com/prometheus/client_golang/api"
 	promapi "github.com/prometheus/client_golang/api/prometheus/v1"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.20.0"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/jaegertracing/jaeger/pkg/bearertoken"
@@ -49,6 +50,7 @@ type (
 	MetricsReader struct {
 		client promapi.API
 		logger *zap.Logger
+		tracer trace.Tracer
 
 		metricsTranslator dbmodel.Translator
 		latencyMetricName string
@@ -73,7 +75,7 @@ type (
 )
 
 // NewMetricsReader returns a new MetricsReader.
-func NewMetricsReader(logger *zap.Logger, cfg config.Configuration) (*MetricsReader, error) {
+func NewMetricsReader(cfg config.Configuration, logger *zap.Logger, tracer trace.TracerProvider) (*MetricsReader, error) {
 	logger.Info("Creating metrics reader", zap.Any("configuration", cfg))
 
 	roundTripper, err := getHTTPRoundTripper(&cfg, logger)
@@ -96,6 +98,7 @@ func NewMetricsReader(logger *zap.Logger, cfg config.Configuration) (*MetricsRea
 	mr := &MetricsReader{
 		client: promapi.NewAPI(client),
 		logger: logger,
+		tracer: tracer.Tracer("prom-metrics-reader"),
 
 		metricsTranslator: dbmodel.New(operationLabel),
 		callsMetricName:   buildFullCallsMetricName(cfg),
@@ -141,6 +144,10 @@ func buildFullLatencyMetricName(cfg config.Configuration) string {
 		metricName = cfg.MetricNamespace + "_" + metricName
 	}
 
+	if !cfg.NormalizeDuration {
+		return metricName
+	}
+
 	// The long names are automatically appended to the metric name by OTEL's prometheus exporters and are defined in:
 	//   https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/pkg/translator/prometheus#metric-name
 	shortToLongName := map[string]string{"ms": "milliseconds", "s": "seconds"}
@@ -160,7 +167,7 @@ func (m MetricsReader) GetCallRates(ctx context.Context, requestParams *metricss
 		buildPromQuery: func(p promQueryParams) string {
 			return fmt.Sprintf(
 				// Note: p.spanKindFilter can be ""; trailing commas are okay within a timeseries selection.
-				`sum(rate(%s_total{service_name =~ "%s", %s}[%s])) by (%s)`,
+				`sum(rate(%s{service_name =~ "%s", %s}[%s])) by (%s)`,
 				m.callsMetricName,
 				p.serviceFilter,
 				p.spanKindFilter,
@@ -181,7 +188,12 @@ func buildFullCallsMetricName(cfg config.Configuration) string {
 	if cfg.MetricNamespace != "" {
 		metricName = cfg.MetricNamespace + "_" + metricName
 	}
-	return metricName
+
+	if !cfg.NormalizeCalls {
+		return metricName
+	}
+
+	return metricName + "_total"
 }
 
 // GetErrorRates gets the error rate metrics for the given set of error rate query parameters.
@@ -193,7 +205,7 @@ func (m MetricsReader) GetErrorRates(ctx context.Context, requestParams *metrics
 		buildPromQuery: func(p promQueryParams) string {
 			return fmt.Sprintf(
 				// Note: p.spanKindFilter can be ""; trailing commas are okay within a timeseries selection.
-				`sum(rate(%s_total{service_name =~ "%s", status_code = "STATUS_CODE_ERROR", %s}[%s])) by (%s) / sum(rate(%s_total{service_name =~ "%s", %s}[%s])) by (%s)`,
+				`sum(rate(%s{service_name =~ "%s", status_code = "STATUS_CODE_ERROR", %s}[%s])) by (%s) / sum(rate(%s{service_name =~ "%s", %s}[%s])) by (%s)`,
 				m.callsMetricName, p.serviceFilter, p.spanKindFilter, p.rate, p.groupBy,
 				m.callsMetricName, p.serviceFilter, p.spanKindFilter, p.rate, p.groupBy,
 			)
@@ -215,8 +227,8 @@ func (m MetricsReader) executeQuery(ctx context.Context, p metricsQueryParams) (
 	}
 	promQuery := m.buildPromQuery(p)
 
-	span, ctx := startSpanForQuery(ctx, p.metricName, promQuery)
-	defer span.Finish()
+	ctx, span := startSpanForQuery(ctx, p.metricName, promQuery, m.tracer)
+	defer span.End()
 
 	queryRange := promapi.Range{
 		Start: p.EndTime.Add(-1 * *p.Lookback),
@@ -226,8 +238,9 @@ func (m MetricsReader) executeQuery(ctx context.Context, p metricsQueryParams) (
 
 	mv, warnings, err := m.client.QueryRange(ctx, promQuery, queryRange)
 	if err != nil {
+		err = fmt.Errorf("failed executing metrics query: %w", err)
 		logErrorToSpan(span, err)
-		return &metrics.MetricFamily{}, fmt.Errorf("failed executing metrics query: %w", err)
+		return &metrics.MetricFamily{}, err
 	}
 	if len(warnings) > 0 {
 		m.logger.Warn("Warnings detected on Prometheus query", zap.Any("warnings", warnings), zap.String("query", promQuery), zap.Any("range", queryRange))
@@ -278,17 +291,19 @@ func promqlDurationString(d *time.Duration) string {
 	return string(b)
 }
 
-func startSpanForQuery(ctx context.Context, metricName, query string) (opentracing.Span, context.Context) {
-	span, ctx := opentracing.StartSpanFromContext(ctx, metricName)
-	ottag.DBStatement.Set(span, query)
-	ottag.DBType.Set(span, "prometheus")
-	ottag.Component.Set(span, "promql")
-	return span, ctx
+func startSpanForQuery(ctx context.Context, metricName, query string, tp trace.Tracer) (context.Context, trace.Span) {
+	ctx, span := tp.Start(ctx, metricName)
+	span.SetAttributes(
+		attribute.Key(semconv.DBStatementKey).String(query),
+		attribute.Key(semconv.DBSystemKey).String("prometheus"),
+		attribute.Key("component").String("promql"),
+	)
+	return ctx, span
 }
 
-func logErrorToSpan(span opentracing.Span, err error) {
-	ottag.Error.Set(span, true)
-	span.LogFields(otlog.Error(err))
+func logErrorToSpan(span trace.Span, err error) {
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 }
 
 func getHTTPRoundTripper(c *config.Configuration, logger *zap.Logger) (rt http.RoundTripper, err error) {
