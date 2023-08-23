@@ -1,6 +1,12 @@
 name: Publish release
 
 on:
+  push:
+    branches: [main]
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches: [main]
   release:
     types:
       - published
@@ -10,9 +16,11 @@ on:
 permissions:
   deployments: write
   contents: write
+  id-token: write
 
 jobs:
   publish-release:
+    name: Create Jaeger latest release
     runs-on: ubuntu-latest
 
     steps:
@@ -43,50 +51,79 @@ jobs:
     - name: Install tools
       run: make install-ci
 
-    - name: Configure GPG Key
-      id: import_gpg
-      uses: crazy-max/ghaction-import-gpg@v5
-      with:
-        gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-        passphrase: ${{ secrets.GPG_PASSPHRASE }}
+#     - name: Configure GPG Key
+#       id: import_gpg
+#       uses: crazy-max/ghaction-import-gpg@v5
+#       with:
+#         gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+#         passphrase: ${{ secrets.GPG_PASSPHRASE }}
 
-    - name: Build binaries
-      id: build-binaries
-      run: make build-all-platforms
+#     - name: Build binaries
+#       id: build-binaries
+#       run: make build-all-platforms
 
-    - name: Package binaries
-      id: package-binaries
-      run: bash scripts/package-deploy.sh
-      if: steps.build-binaries.outcome == 'success'
+#     - name: Package binaries
+#       id: package-binaries
+#       run: bash scripts/package-deploy.sh
+#       if: steps.build-binaries.outcome == 'success'
 
-    - name: Upload binaries
-      uses: svenstaro/upload-release-action@1beeb572c19a9242f4361f4cee78f8e0d9aec5df
-      with:
-        file: '{deploy/*.tar.gz,deploy/*.zip,deploy/*.sha256sum.txt,deploy/*.asc}'
-        file_glob: true
-        tag: ${{ github.ref }}
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-      if: steps.package-binaries.outcome == 'success'
+#     - name: Upload binaries
+#       uses: svenstaro/upload-release-action@2b9d2847a97b04d02ad5c3df2d3a27baa97ce689
+#       with:
+#         file: '{deploy/*.tar.gz,deploy/*.zip,deploy/*.sha256sum.txt,deploy/*.asc}'
+#         file_glob: true
+#         tag: ${{ github.ref }}
+#         repo_token: ${{ secrets.GITHUB_TOKEN }}
+#       if: steps.package-binaries.outcome == 'success'
 
     - uses: docker/setup-qemu-action@2b82ce82d56a2a04d2637cd93a637ae1b359c0a7
 
     - name: Build and upload all docker images
+      id: build-and-publish
       run: bash scripts/build-upload-docker-images.sh
       env:
         DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
 
-    - name: Build, test, and publish all-in-one image
-      run: bash scripts/build-all-in-one-image.sh
-      env:
-        DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+    # - name: Build, test, and publish all-in-one image
+    #   run: bash scripts/build-all-in-one-image.sh
+    #   env:
+    #     DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    #     QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
 
-    - name: Build, test, and publish hotrod image
-      run: bash scripts/hotrod-integration-test.sh
+    # - name: Build, test, and publish hotrod image
+    #   run: bash scripts/hotrod-integration-test.sh
+    #   env:
+    #     DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    #     QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+
+    - name: Get Image Tag
+      id: tags
+      run: | 
+        echo "tag=$(bash scripts/compute-tags.sh)"
+    
+    - name: Get Image Digest
+      id: digest
+      run: | 
+        echo "imagedigest=$(docker images jaeger-build:${{ steps.tags.outputs.tag }} --digests --quiet --no-trunc)" >> $GITHUB_OUTPUT
+
+    - name: Install Cosign
+      uses: sigstore/cosign-installer@main
+
+    - name: Sign the published Docker image
+          # This step uses the identity token to provision an ephemeral certificate
+          # against the sigstore community Fulcio instance.
       env:
-        DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+        DIGEST: ${{ steps.build-and-publish.outputs.digest }}
+        TAG: ${{ steps.tags.outputs.tag }}
+      run: echo "${TAG}, ${DIGEST}"
+      # echo "${TAG}" | xargs -I {} cosign sign --yes {}@${DIGEST}
+
+    - name: Sign the Container Images
+      env:
+        COSIGN_EXPERIMENTAL: "true"
+      run: |
+        cosign sign jaeger-build@${{ steps.digest.outputs.imagedigest }}
 
     - name: SBOM Generation
       uses: anchore/sbom-action@78fc58e266e87a38d4194b2137a3d4e9bcaf7ca1
